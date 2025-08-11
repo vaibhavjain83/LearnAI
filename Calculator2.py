@@ -33,7 +33,7 @@ if cols[3].button("."):
 # Layout for operation buttons
 op_cols = st.columns(4)
 if op_cols[0].button("add"):
-    append_char("")
+    append_char("+")
 if op_cols[1].button("Subtract"):
     append_char("-")
 if op_cols[2].button("Multiply"):
