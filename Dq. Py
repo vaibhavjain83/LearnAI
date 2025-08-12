@@ -1,0 +1,113 @@
+from numpy import ndarray
+import streamlit as st
+import pandas as pd
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import IsolationForest
+from sklearn.neighbors import LocalOutlierFactor
+import re
+import openpyxl
+from openpyxl.styles import PatternFill
+import io
+
+# --- Helper Functions ---
+
+def extract_rules_from_text(text, columns):
+    # Extract rules using regex from plain English input
+    rules = []
+    for line in text.split('\n'):
+        line = line.strip()
+        match = re.match(r"Column (\w+) should be ([><=]+) (\d+)", line)
+        if match and match.group(1) in columns:
+            rules.append(line)
+    return rules
+
+# --- Streamlit UI ---
+
+st.title("Unsupervised Data Quality & Anomaly Checker")
+
+uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
+if uploaded_file:
+    df = pd.read_excel(uploaded_file)
+    st.write("Data Preview:", df.head())
+
+    st.write("Columns:", list(df.columns))
+    st.write("Select an unsupervised algorithm for column-wise anomaly detection:")
+
+    algo = st.selectbox(
+        "Algorithm",
+        ["Isolation Forest", "Local Outlier Factor"]
+    )
+
+    # Select only numeric columns for anomaly detection
+    X = df.select_dtypes(include=['number'])
+    if X.shape[1] == 0:
+        st.error("No numeric columns found for anomaly detection.")
+    else:
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        anomaly_results = {}
+
+        for idx, col in enumerate(X.columns):
+            col_data = X_scaled[:, idx].reshape(-1, 1)
+            if algo == "Isolation Forest":
+                iso = IsolationForest(contamination=0.05, random_state=42)
+                anomaly_labels = iso.fit_predict(col_data)
+                anomaly_scores = iso.decision_function(col_data)
+                anomaly_results[col] = {
+                    'labels': anomaly_labels,
+                    'scores': anomaly_scores
+                }
+                df[f'{col}_Anomaly'] = ['Anomaly' if x == -1 else 'Normal' for x in anomaly_labels]
+                df[f'{col}_Anomaly_Reason'] = [
+                    f"Isolation Forest score: {score:.3f}" if label == -1 else ""
+                    for label, score in zip(anomaly_labels, anomaly_scores)
+                ]
+            elif algo == "Local Outlier Factor":
+                lof = LocalOutlierFactor(n_neighbors=20, contamination=0.05)
+                anomaly_labels = lof.fit_predict(col_data)
+                anomaly_scores = lof.negative_outlier_factor_
+                anomaly_results[col] = {
+                    'labels': anomaly_labels,
+                    'scores': anomaly_scores
+                }
+                df[f'{col}_Anomaly'] = ['Anomaly' if x == -1 else 'Normal' for x in anomaly_labels]
+                df[f'{col}_Anomaly_Reason'] = [
+                    f"LOF score: {score:.3f}" if label == -1 else ""
+                    for label, score in zip(anomaly_labels, anomaly_scores)
+                ]
+
+        st.write("Column-wise Anomaly Results:", df)
+        for col in X.columns:
+            st.write(f"Anomaly Counts for {col}:", df[f'{col}_Anomaly'].value_counts())
+
+       
+        # Create a copy of the DataFrame for Excel output
+        excel_output = io.BytesIO()
+        df.to_excel(excel_output, index=False)
+        excel_output.seek(0)
+
+        # Load the Excel file with openpyxl
+        wb = openpyxl.load_workbook(excel_output)
+        ws = wb.active
+        yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+
+        # Color original cells where anomaly is found
+        for idx, row in df.iterrows():
+            for col in X.columns:
+                anomaly_col = f"{col}_Anomaly"
+                if anomaly_col in df.columns and row[anomaly_col] == "Anomaly":
+                    excel_col_idx = df.columns.get_loc(col) + 1  # openpyxl is 1-based
+                    ws.cell(row=idx + 2, column=excel_col_idx).fill = yellow_fill  # +2 for header and 1-based index
+
+        # Save the colored Excel file to a new BytesIO object
+        colored_output = io.BytesIO()
+        wb.save(colored_output)
+        colored_output.seek(0)
+
+        st.download_button(
+            "Download Colored Excel Report",
+            colored_output,
+            "anomaly_report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
